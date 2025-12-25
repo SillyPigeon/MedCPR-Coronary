@@ -1,0 +1,232 @@
+import numpy as np
+from scipy.ndimage import map_coordinates
+from scipy.interpolate import CubicSpline
+import medpy.io as mio
+from skimage.morphology import skeletonize
+from itertools import product
+from collections import defaultdict, deque
+
+def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
+    print("="*40)
+    print("IMAGE PATH:", image_path)
+    print("POINTS PATH:", points_path)
+    print("SAVE PATH:", save_path if save_path is not None else "reformatted_image.nii.gz")
+    print("FIELD OF VIEW (mm):", fov_mm)
+    print("="*40)
+
+    # Step 1: Load the image and points
+    
+    # Medpy loads the image in this orientation : (x, y, z)
+    # where, the coordinates are with respect to the patient axis
+    # x -> LEFT to RIGHT (SAGITTAL slices)
+    # y -> POSTERIOR to ANTERIOR (CORONAL slices)
+    # z -> INFERIOR to SUPERIOR (AXIAL slices)
+    
+    image, h0 = mio.load(image_path) 
+    points = np.load(points_path) # Array of shape (N, 3)
+
+    pixel_spacing = h0.get_voxel_spacing()
+
+    diff_points = points[1:] - points[:-1]
+    actual_distances = np.sum(np.linalg.norm((diff_points) * np.array(pixel_spacing), axis = 1))
+    pixel_distances = np.insert(np.cumsum(np.linalg.norm(diff_points, axis = 1)), 0, 0)
+    total_pixel_length = pixel_distances[-1]
+
+    print(f"Actual Length of the vessel: {actual_distances} mm")
+    print(f"Pixel Length of the vessel: {total_pixel_length} pixels")
+
+    # To use Cubic Spline interpoleation to get smoothness in the image
+    spline = CubicSpline(pixel_distances, points, bc_type='natural')
+
+    # So num_steps tell the number of output slices that we will have in the reformatted image
+    # For example, if the length of the vessel was 100 pixel 
+    # and needed output spacing was 2 pixels worth of 1 mm
+    # that means 100 / 2 = 50 output slices
+    num_steps = int(total_pixel_length)
+
+    # So gives a distance array from 0 to total lenfth with skips
+    # so somewhat like [0, 2, 4, 6, ..., total_pixel_length]
+    new_dists = np.linspace(0, total_pixel_length, num_steps)
+
+    resampled_points = spline(new_dists) # Shape (num_steps, 3)
+
+    resampled_tangents = spline(new_dists, nu = 1)
+
+
+    # Time to create the slice grid
+    # So you want 50 mm field of view with 1 mm spacing, 
+    # so 50 pixels on width and breadth
+    pixels_per_side = int(fov_mm)
+    half_size = pixels_per_side // 2
+
+    grid_range = np.arange(-half_size, half_size + 1)
+
+    # u_grid -> copying of the grid_range row wise
+    # v_grid -> copying of the grid_range column wise
+    u_grid, v_grid = np.meshgrid(grid_range, grid_range)
+
+    u_flat = u_grid.flatten()
+    v_flat = v_grid.flatten()
+
+    output_slices = []
+    prev_U = None
+    # reference vector for constructing the orthogonal plane
+    ref_vec = np.array([0, 1, 0]) # Z axis
+
+    for i in range(len(resampled_points)):
+        # The resampled point at which the slice is to be taken
+        p_curr = resampled_points[i]
+
+        # This tangent is the vector pointing along the vessel direction
+        tangent = resampled_tangents[i]
+
+        # Normalize the tangent
+        t_norm = tangent / np.linalg.norm(tangent)
+
+        # Compute orthogonal vectors between the tangent and reference vector
+        u_vec = np.cross(t_norm, ref_vec)
+
+        # if the u_vec is close to zero vecotr, happens only when both are parallel or coincident
+        # Suppose the t_vec = [0, 1, 0] and ref_vec = [0, 1, 0]
+        # Cross product will give [0, 0, 0] or undefined direction
+        # So we have to use another vector for cross product
+    
+        if np.linalg.norm(u_vec) < 1e-6:
+            # Hence the use of X axis that is [1, 0, 0]
+            u_vec = np.cross(t_norm, np.array([1, 0, 0]))
+
+        # Once we got the orthogonal vector, normalize it
+        u_norm = u_vec / np.linalg.norm(u_vec)
+
+        # IF prev_U is not None, that means it is not the first slice
+        # and also the direction of the first point should be consistent and along with the same direction for the subsequent points
+        if prev_U is not None:
+            # To ensure smoothness of the plane orientation
+            # If the current u_norm is opposite to the previous u_norm, flip it
+            # Cause coss product some times leads to direction flipping
+            # cant help it!!
+            if np.dot(u_norm, prev_U) < 0:
+                u_norm = -u_norm
+
+        # now again if is not the starting slice
+        if prev_U is not None:
+            # That can be done by using this method
+            # that is use 90% of the previous slice and 10% of the current slice to ensure smootheness
+            u_norm = (0.9 * prev_U) + (0.1 * u_norm)
+            # and NORMALIIIIZEEEE
+            u_norm = u_norm / np.linalg.norm(u_norm)
+
+        # And update with the current u_norm to prev_U
+        prev_U = u_norm
+
+        # Once done, 
+        v_vec = np.cross(t_norm, u_norm)
+        v_norm = v_vec / np.linalg.norm(v_vec)
+
+        center_mm = p_curr * np.array(pixel_spacing)
+
+        slice_coords_mm = (
+            center_mm +
+            np.outer(u_flat, u_norm) +
+            np.outer(v_flat, v_norm)
+        )
+
+        slice_coords_pix = slice_coords_mm / np.array(pixel_spacing)
+        coords_for_scipy = slice_coords_pix.T
+
+        slice_pixels = map_coordinates(
+            image,
+            coords_for_scipy,
+            order=1,
+        )
+
+        slice_2d = slice_pixels.reshape(len(grid_range), len(grid_range))
+        output_slices.append(slice_2d)
+
+    mio.save(np.array(output_slices), save_path if save_path is not None else "reformatted_image.nii.gz", h0)
+
+    print(f"Saved reformatted image at {save_path if save_path is not None else 'reformatted_image.nii.gz'}")
+
+def extract_coordinates(seg_path, save_path=None, skip=10):
+
+    print("="*40)
+    print("SEGMENTATION PATH:", seg_path)
+    print("SAVE_PATH:", save_path if save_path is not None else "./points.npy")
+    print("SKIP FACTOR:", skip)
+    print("="*40)
+
+    # 1. Load and skeletonize
+    seg, _ = mio.load(seg_path)
+    seg_bin = (seg > 0)
+
+    skeleton = skeletonize(seg_bin)
+    coords = np.array(np.nonzero(skeleton)).T  # (N, 3)
+
+    print("Total skeleton points:", coords.shape[0])
+
+    if coords.shape[0] < 2:
+        print("Not enough sementation points to extract centerline!!")
+        print("Extraction failed.")
+        return False
+
+    coord_set = set(map(tuple, coords))
+
+    neighbors = defaultdict(list)
+
+    directions = list(product([-1, 0, 1], repeat=3))
+    directions.remove((0, 0, 0))
+
+    for c in coord_set:
+        for d in directions:
+            n = (c[0] + d[0], c[1] + d[1], c[2] + d[2])
+            if n in coord_set:
+                neighbors[c].append(n)
+
+    degrees = {k: len(v) for k, v in neighbors.items()}
+
+    if any(deg > 2 for deg in degrees.values()):
+        print("There is a branch in the skeleton, cannot extract a single centerline.")
+        print("Extraction failed.")
+        return False
+
+    endpoints = [k for k, deg in degrees.items() if deg == 1]
+
+    if len(endpoints) != 2:
+        print("The skeleton does not have exactly two endpoints.")
+        print("Extraction failed.")
+        return False
+
+    start = endpoints[0]
+
+    ordered = []
+    visited = set()
+
+    curr = start
+    prev = None
+
+    while True:
+        ordered.append(curr)
+        visited.add(curr)
+
+        next_candidates = [
+            n for n in neighbors[curr]
+            if n != prev
+        ]
+
+        if not next_candidates:
+            break
+
+        next_node = next_candidates[0]
+        prev, curr = curr, next_node
+
+        if curr in visited:
+            break
+
+    ordered = np.array(ordered)
+
+    if skip > 1:
+        ordered = ordered[::skip]
+
+    np.save(save_path if save_path is not None else "points.npy", ordered)
+
+    return ordered
