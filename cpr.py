@@ -5,6 +5,8 @@ import medpy.io as mio
 from skimage.morphology import skeletonize
 from itertools import product
 from collections import defaultdict, deque
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
     print("="*40)
@@ -147,6 +149,127 @@ def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
 
     print(f"Saved reformatted image at {save_path if save_path is not None else 'reformatted_image.nii.gz'}")
 
+def visualize_multi_mip(binary_data, skeleton_data):
+    """
+    显示三个方向的最大强度投影（MIP）
+
+    参数:
+    -----------
+    binary_data : numpy.ndarray
+        二值化的体积数据
+    skeleton_data : numpy.ndarray
+        骨架化的体积数据
+    """
+    import matplotlib
+    from matplotlib.patches import Patch
+    # 设置字体为英文字体，避免中文显示问题
+    matplotlib.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Liberation Sans']
+    matplotlib.rcParams['axes.unicode_minus'] = False
+
+    # 计算三个方向的MIP
+    # XY平面（横断面）的MIP
+    mip_xy_skel = np.max(skeleton_data, axis=2)
+    mip_xy_vol = np.max(binary_data, axis=2)
+
+    # XZ平面（冠状面）的MIP
+    mip_xz_skel = np.max(skeleton_data, axis=1)
+    mip_xz_vol = np.max(binary_data, axis=1)
+
+    # YZ平面（矢状面）的MIP
+    mip_yz_skel = np.max(skeleton_data, axis=0)
+    mip_yz_vol = np.max(binary_data, axis=0)
+
+    # 创建图形
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+
+    # 1. 显示骨架的MIP
+    axes[0, 0].imshow(mip_xy_skel, cmap='Reds', origin='lower')
+    axes[0, 0].set_title('XY Plane - Centerline MIP (Axial)')
+    axes[0, 0].set_xlabel('X (voxels)')
+    axes[0, 0].set_ylabel('Y (voxels)')
+    axes[0, 0].grid(True, alpha=0.3)
+
+    axes[0, 1].imshow(mip_xz_skel, cmap='Reds', origin='lower')
+    axes[0, 1].set_title('XZ Plane - Centerline MIP (Coronal)')
+    axes[0, 1].set_xlabel('X (voxels)')
+    axes[0, 1].set_ylabel('Z (voxels)')
+    axes[0, 1].grid(True, alpha=0.3)
+
+    axes[0, 2].imshow(mip_yz_skel, cmap='Reds', origin='lower')
+    axes[0, 2].set_title('YZ Plane - Centerline MIP (Sagittal)')
+    axes[0, 2].set_xlabel('Y (voxels)')
+    axes[0, 2].set_ylabel('Z (voxels)')
+    axes[0, 2].grid(True, alpha=0.3)
+
+    # 2. 显示叠加的MIP（骨架为红色，血管体积为绿色）
+    # XY平面
+    rgb_xy = np.zeros(mip_xy_vol.shape + (3,))
+    rgb_xy[..., 0] = mip_xy_skel  # 红色通道：骨架
+    rgb_xy[..., 1] = mip_xy_vol  # 绿色通道：原始体积
+    rgb_xy[..., 2] = 0  # 蓝色通道
+
+    axes[1, 0].imshow(rgb_xy, origin='lower')
+    axes[1, 0].set_title('XY Plane - Overlay MIP\nRed: Centerline, Green: Vessel')
+    axes[1, 0].set_xlabel('X (voxels)')
+    axes[1, 0].set_ylabel('Y (voxels)')
+    axes[1, 0].grid(True, alpha=0.3)
+
+    # XZ平面
+    rgb_xz = np.zeros(mip_xz_vol.shape + (3,))
+    rgb_xz[..., 0] = mip_xz_skel  # 红色通道：骨架
+    rgb_xz[..., 1] = mip_xz_vol  # 绿色通道：原始体积
+    rgb_xz[..., 2] = 0  # 蓝色通道
+
+    axes[1, 1].imshow(rgb_xz, origin='lower')
+    axes[1, 1].set_title('XZ Plane - Overlay MIP\nRed: Centerline, Green: Vessel')
+    axes[1, 1].set_xlabel('X (voxels)')
+    axes[1, 1].set_ylabel('Z (voxels)')
+    axes[1, 1].grid(True, alpha=0.3)
+
+    # YZ平面
+    rgb_yz = np.zeros(mip_yz_vol.shape + (3,))
+    rgb_yz[..., 0] = mip_yz_skel  # 红色通道：骨架
+    rgb_yz[..., 1] = mip_yz_vol  # 绿色通道：原始体积
+    rgb_yz[..., 2] = 0  # 蓝色通道
+
+    axes[1, 2].imshow(rgb_yz, origin='lower')
+    axes[1, 2].set_title('YZ Plane - Overlay MIP\nRed: Centerline, Green: Vessel')
+    axes[1, 2].set_xlabel('Y (voxels)')
+    axes[1, 2].set_ylabel('Z (voxels)')
+    axes[1, 2].grid(True, alpha=0.3)
+
+    # 添加颜色说明
+    legend_elements = [
+        Patch(facecolor='red', alpha=0.7, label='Centerline'),
+        Patch(facecolor='green', alpha=0.7, label='Vessel Volume')
+    ]
+    fig.legend(handles=legend_elements, loc='upper center', ncol=2,
+               bbox_to_anchor=(0.5, 1.02), framealpha=0.8)
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92)  # 为图例留出空间
+    plt.show()
+
+    # 显示MIP统计信息
+    # print("\nMIP Statistics:")
+    # print(f"XY Plane (Axial):")
+    # print(f"  Centerline MIP max value: {mip_xy_skel.max()}")
+    # print(f"  Vessel MIP max value: {mip_xy_vol.max()}")
+    # print(f"  Centerline MIP non-zero voxels: {np.sum(mip_xy_skel > 0)}")
+    # print(f"  Vessel MIP non-zero voxels: {np.sum(mip_xy_vol > 0)}")
+    #
+    # print(f"\nXZ Plane (Coronal):")
+    # print(f"  Centerline MIP max value: {mip_xz_skel.max()}")
+    # print(f"  Vessel MIP max value: {mip_xz_vol.max()}")
+    # print(f"  Centerline MIP non-zero voxels: {np.sum(mip_xz_skel > 0)}")
+    # print(f"  Vessel MIP non-zero voxels: {np.sum(mip_xz_vol > 0)}")
+    #
+    # print(f"\nYZ Plane (Sagittal):")
+    # print(f"  Centerline MIP max value: {mip_yz_skel.max()}")
+    # print(f"  Vessel MIP max value: {mip_yz_vol.max()}")
+    # print(f"  Centerline MIP non-zero voxels: {np.sum(mip_yz_skel > 0)}")
+    # print(f"  Vessel MIP non-zero voxels: {np.sum(mip_yz_vol > 0)}")
+
 def extract_coordinates(seg_path, save_path=None, skip=10):
 
     print("="*40)
@@ -163,6 +286,8 @@ def extract_coordinates(seg_path, save_path=None, skip=10):
     coords = np.array(np.nonzero(skeleton)).T  # (N, 3)
 
     print("Total skeleton points:", coords.shape[0])
+    # 可视化
+    #visualize_multi_mip(seg, skeleton)
 
     if coords.shape[0] < 2:
         print("Not enough sementation points to extract centerline!!")
@@ -185,16 +310,16 @@ def extract_coordinates(seg_path, save_path=None, skip=10):
     degrees = {k: len(v) for k, v in neighbors.items()}
 
     if any(deg > 2 for deg in degrees.values()):
-        print("There is a branch in the skeleton, cannot extract a single centerline.")
-        print("Extraction failed.")
-        return False
+        print("Warning::There is a branch in the skeleton, cannot extract a single centerline.")
+        # print("Extraction failed.")
+        # return False
 
     endpoints = [k for k, deg in degrees.items() if deg == 1]
 
     if len(endpoints) != 2:
-        print("The skeleton does not have exactly two endpoints.")
-        print("Extraction failed.")
-        return False
+        print("Warning::The skeleton does not have exactly two endpoints.")
+        # print("Extraction failed.")
+        # return False
 
     start = endpoints[0]
 
