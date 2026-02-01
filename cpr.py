@@ -274,7 +274,8 @@ def visualize_multi_mip(binary_data, skeleton_data):
 
 def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_branches=3):
     """
-    提取多分支中心线，保存最长的若干条路径
+    提取多分支中心线，根据冠状动脉的解剖特点（两条主分支）选择路径，
+    优先选择最长且互相不重复的路径
 
     参数:
     -----------
@@ -308,9 +309,6 @@ def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_bran
 
     print(f"Total skeleton points: {coords.shape[0]}")
 
-    # 可视化
-    #visualize_multi_mip(seg, skeleton)
-
     if coords.shape[0] < 2:
         print("Not enough skeleton points to extract centerline!")
         return []
@@ -340,43 +338,193 @@ def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_bran
         print("Not enough endpoints to form a path!")
         return []
 
-    # 4. 使用BFS找到所有可能的路径
-    all_paths = []
+    # 4. 按Z坐标值（第3个元素，索引2）对端点排序（降序）
+    endpoints.sort(key=lambda x: x[2], reverse=True)
 
-    for start in endpoints:
-        for end in endpoints:
-            if start != end:
-                try:
-                    path = nx.shortest_path(G, start, end)
-                    if len(path) > 2:  # 排除非常短的路径
-                        all_paths.append(path)
-                except nx.NetworkXNoPath:
-                    continue
+    # 5. 选取主分支1的起点（Z坐标最大的端点）
+    start1 = endpoints[0]
+    print(f"Main branch 1 start (highest Z): {start1}")
 
-    # 5. 去重和排序
-    unique_paths = []
-    seen_paths = set()
+    # 6. 为主分支1生成所有可能路径（从start1到其他所有端点）
+    branch1_paths = []
+    for end in endpoints[1:]:  # 排除起点自身
+        try:
+            path = nx.shortest_path(G, start1, end)
+            if len(path) > 2:  # 排除非常短的路径
+                # 计算路径的"独特性"指标：端点距离 + 路径长度
+                # 更高的Z坐标差可能意味着更大的分支角度
+                z_diff = abs(start1[2] - end[2])
+                path_info = {
+                    'path': path,
+                    'length': len(path),
+                    'z_diff': z_diff,
+                    'endpoint': end,
+                    'start': start1
+                }
+                branch1_paths.append(path_info)
+        except nx.NetworkXNoPath:
+            continue
 
-    for path in all_paths:
-        # 转换为元组并排序以确保方向一致性
-        path_tuple = tuple(sorted([path[0], path[-1]]))
-        if path_tuple not in seen_paths:
-            seen_paths.add(path_tuple)
-            unique_paths.append(path)
+    print(f"Found {len(branch1_paths)} possible paths for branch 1")
 
-    # 按长度排序
-    unique_paths.sort(key=lambda x: len(x), reverse=True)
+    # 7. 选取主分支2的起点（剩余端点中Z坐标最大的）
+    # 首先找出branch1_paths中使用的端点
+    branch1_endpoints = set([start1])
+    for path_info in branch1_paths:
+        branch1_endpoints.add(path_info['endpoint'])
 
-    # 6. 限制路径数量
-    top_paths = unique_paths[:max_branches]
+    remaining_endpoints = [ep for ep in endpoints if ep not in branch1_endpoints]
 
-    print(f"Found {len(top_paths)} distinct centerline paths")
-    for i, path in enumerate(top_paths):
-        print(f"  Path {i + 1}: {len(path)} points")
+    if not remaining_endpoints:
+        print("No remaining endpoints for branch 2 after branch 1 endpoints selection")
+        # 如果没有剩余端点，则从所有端点中选取Z坐标第二大的（除了start1）
+        if len(endpoints) > 1:
+            start2 = endpoints[1]
+            print(f"Using second highest Z as branch 2 start: {start2}")
+        else:
+            print("Cannot find branch 2 start")
+            branch2_paths = []
+    else:
+        # 按Z坐标降序排序剩余端点
+        remaining_endpoints.sort(key=lambda x: x[2], reverse=True)
+        start2 = remaining_endpoints[0]
+        print(f"Main branch 2 start (highest Z in remaining): {start2}")
 
-    # 7. 转换为numpy数组并下采样
+        # 8. 为主分支2生成所有可能路径（从start2到其他所有端点）
+        branch2_paths = []
+        # 排除start2自身和start1（如果start2 == start1）
+        available_ends = [ep for ep in endpoints if ep != start2]
+
+        for end in available_ends:
+            try:
+                path = nx.shortest_path(G, start2, end)
+                if len(path) > 2:  # 排除非常短的路径
+                    z_diff = abs(start2[2] - end[2])
+                    path_info = {
+                        'path': path,
+                        'length': len(path),
+                        'z_diff': z_diff,
+                        'endpoint': end,
+                        'start': start2
+                    }
+                    branch2_paths.append(path_info)
+            except nx.NetworkXNoPath:
+                continue
+
+        print(f"Found {len(branch2_paths)} possible paths for branch 2")
+
+    # 9. 合并所有路径信息
+    all_paths_info = branch1_paths + branch2_paths
+
+    if not all_paths_info:
+        print("No valid paths found!")
+        return []
+
+    # 10. 路径选择和排序策略：优先选择长且不重复的路径
+    selected_paths = []
+    all_paths_info.sort(key=lambda x: x['length'], reverse=True)  # 按长度降序排序
+
+    # 计算路径之间的重叠度
+    def calculate_overlap(path1_set, path2_set):
+        intersection = path1_set.intersection(path2_set)
+        if len(path1_set) == 0 or len(path2_set) == 0:
+            return 0
+        return len(intersection) / min(len(path1_set), len(path2_set))
+
+    # 优先选择主分支1中最长的路径
+    if branch1_paths:
+        # 先为主分支1选择路径
+        branch1_paths.sort(key=lambda x: x['length'], reverse=True)
+        best_branch1 = branch1_paths[0]
+        selected_paths.append(best_branch1)
+        print(f"Selected branch 1 path: length={best_branch1['length']}, Z difference={best_branch1['z_diff']}")
+
+    # 从所有路径中选择与已选路径重叠度最低的路径
+    selected_sets = []
+    if selected_paths:
+        selected_sets.append(set(selected_paths[0]['path']))
+
+    # 选择其他路径（考虑长度和重叠度）
+    remaining_paths = [p for p in all_paths_info if p not in selected_paths]
+
+    while len(selected_paths) < max_branches and remaining_paths:
+        # 为每个剩余路径计算"得分"
+        path_scores = []
+        for path_info in remaining_paths:
+            path_set = set(path_info['path'])
+
+            # 计算与所有已选路径的最大重叠度
+            max_overlap = 0
+            if selected_sets:
+                for selected_set in selected_sets:
+                    overlap = calculate_overlap(path_set, selected_set)
+                    max_overlap = max(max_overlap, overlap)
+
+            # 得分公式：长度权重 * (1 - 重叠度)
+            # 给予长度更高的权重，但惩罚重叠
+            length_weight = path_info['length'] / 100.0  # 归一化
+            score = length_weight * (1.0 - max_overlap)
+
+            # 额外奖励Z坐标差异大的路径（可能代表不同分支）
+            z_bonus = path_info['z_diff'] / 100.0
+
+            path_scores.append({
+                'path_info': path_info,
+                'score': score + z_bonus,
+                'overlap': max_overlap,
+                'length': path_info['length']
+            })
+
+        # 按得分排序
+        path_scores.sort(key=lambda x: x['score'], reverse=True)
+
+        if path_scores:
+            best_candidate = path_scores[0]
+            selected_paths.append(best_candidate['path_info'])
+            selected_sets.append(set(best_candidate['path_info']['path']))
+
+            # 从剩余路径中移除
+            remaining_paths = [p for p in remaining_paths if p != best_candidate['path_info']]
+
+            print(f"Selected additional path: length={best_candidate['length']}, "
+                  f"overlap={best_candidate['overlap']:.2f}, score={best_candidate['score']:.3f}")
+        else:
+            break
+
+    # 11. 转换为路径列表并确保唯一性
+    final_paths = []
+    seen_endpoint_pairs = set()
+
+    for path_info in selected_paths:
+        path = path_info['path']
+        # 确保路径方向唯一性
+        endpoint_pair = tuple(sorted([path[0], path[-1]]))
+        if endpoint_pair not in seen_endpoint_pairs:
+            seen_endpoint_pairs.add(endpoint_pair)
+            final_paths.append(path)
+        else:
+            print(f"Skipping duplicate path with endpoints {endpoint_pair}")
+
+    print(f"\nFinal selection: {len(final_paths)} paths")
+    for i, path in enumerate(final_paths):
+        print(f"  Path {i + 1}: {len(path)} points, "
+              f"start={path[0]}, end={path[-1]}")
+
+    # 计算路径之间的重叠统计
+    if len(final_paths) > 1:
+        print("\nPath overlap statistics:")
+        for i in range(len(final_paths)):
+            for j in range(i + 1, len(final_paths)):
+                set_i = set(map(tuple, final_paths[i]))
+                set_j = set(map(tuple, final_paths[j]))
+                overlap = set_i.intersection(set_j)
+                overlap_ratio = len(overlap) / min(len(set_i), len(set_j))
+                print(f"  Path {i + 1} vs Path {j + 1}: {len(overlap)} overlapping points "
+                      f"(ratio: {overlap_ratio:.2f})")
+
+    # 12. 转换为numpy数组并下采样
     result_paths = []
-    for i, path in enumerate(top_paths):
+    for i, path in enumerate(final_paths):
         path_array = np.array(path)
         if skip > 1:
             path_array = path_array[::skip]
@@ -390,11 +538,10 @@ def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_bran
 
         result_paths.append(path_array)
 
-    # 8. 可视化提取的路径
+    # 13. 可视化提取的路径
     visualize_extracted_paths(seg, result_paths)
 
     return result_paths
-
 
 def visualize_extracted_paths(volume, paths, title="Extracted Centerline Paths"):
     """
