@@ -459,9 +459,12 @@ def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_bran
 
     print(f"Graph nodes: {G.number_of_nodes()}, edges: {G.number_of_edges()}")
 
-    # 3. 找到所有端点（度数为1的节点）
-    endpoints = [node for node, degree in dict(G.degree()).items() if degree == 1]
-    print(f"Found {len(endpoints)} endpoints")
+    # 3. 找到所有端点（度数为1的节点，或者度数大于3的节点）
+    degree_dict = dict(G.degree())
+
+    # 修改点1：degree == 1 或 degree > 3 都视为端点
+    endpoints = [node for node, degree in degree_dict.items() if degree == 1 or degree > 3]
+    print(f"Found {len(endpoints)} endpoints (degree=1 or degree>3)")
 
     if len(endpoints) < 2:
         print("Not enough endpoints to form a path!")
@@ -506,21 +509,57 @@ def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_bran
 
     if not remaining_endpoints:
         print("No remaining endpoints for branch 2 after branch 1 endpoints selection")
-        # 如果没有剩余端点，则从所有端点中选取Z坐标第二大的（除了start1）
-        if len(endpoints) > 1:
-            start2 = endpoints[1]
-            print(f"Using second highest Z as branch 2 start: {start2}")
+
+        # 修改点2：修改这里的选择逻辑
+        # 从所有端点中选取距离start1大于10且不在branch1_paths中的点
+        valid_candidates = []
+        for ep in endpoints[1:]:  # 排除start1
+            # 计算欧氏距离
+            distance = np.linalg.norm(np.array(start1) - np.array(ep))
+
+            # 检查是否在branch1_paths中
+            in_branch1 = any(ep == path_info['endpoint'] for path_info in branch1_paths)
+
+            if distance > 10 and not in_branch1:
+                valid_candidates.append((ep, distance))
+
+        if valid_candidates:
+            # 按Z坐标降序排序
+            valid_candidates.sort(key=lambda x: x[0][2], reverse=True)
+            start2 = valid_candidates[0][0]
+            print(
+                f"Using valid candidate with Z={start2[2]} as branch 2 start (distance to start1: {valid_candidates[0][1]:.2f})")
         else:
-            print("Cannot find branch 2 start")
+            print("Cannot find suitable branch 2 start (no endpoints with distance > 10 and not in branch1)")
             branch2_paths = []
     else:
-        # 按Z坐标降序排序剩余端点
-        remaining_endpoints.sort(key=lambda x: x[2], reverse=True)
-        start2 = remaining_endpoints[0]
-        print(f"Main branch 2 start (highest Z in remaining): {start2}")
+        # 修改点2：修改这里的选择逻辑
+        # 从剩余端点中选取距离start1大于10且不在branch1_paths中的点
+        valid_candidates = []
+        for ep in remaining_endpoints:
+            # 计算欧氏距离
+            distance = np.linalg.norm(np.array(start1) - np.array(ep))
 
-        # 8. 为主分支2生成所有可能路径（从start2到其他所有端点）
-        branch2_paths = []
+            if distance > 10:
+                valid_candidates.append((ep, distance))
+
+        if valid_candidates:
+            # 按Z坐标降序排序
+            valid_candidates.sort(key=lambda x: x[0][2], reverse=True)
+            start2 = valid_candidates[0][0]
+            print(
+                f"Main branch 2 start (highest Z in valid candidates): {start2}, distance to start1: {valid_candidates[0][1]:.2f}")
+        else:
+            # 如果没有满足距离条件的端点，使用原逻辑
+            start2 = remaining_endpoints[0]
+            print(f"Warning: No endpoints with distance > 10. Using highest Z in remaining: {start2}")
+
+    # 8. 为主分支2生成所有可能路径（从start2到其他所有端点）
+    # 只在这里添加branch2_paths的初始化，避免undefined错误
+    branch2_paths = []
+
+    # 如果找到了有效的start2
+    if 'start2' in locals() and start2:
         # 排除start2自身和start1（如果start2 == start1）
         available_ends = [ep for ep in endpoints if ep != start2]
 
@@ -541,6 +580,8 @@ def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_bran
                 continue
 
         print(f"Found {len(branch2_paths)} possible paths for branch 2")
+    else:
+        print("No valid start2 found, skipping branch 2 path generation")
 
     # 9. 合并所有路径信息
     all_paths_info = branch1_paths + branch2_paths
