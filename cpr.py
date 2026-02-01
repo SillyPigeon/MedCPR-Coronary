@@ -9,146 +9,275 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import networkx as nx
 
-def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
-    print("="*40)
+
+def curve_planar_reformat(image_path, points_path, save_path, fov_mm=50, rotation_angle=0):
+    """
+    曲线平面重建，支持旋转角度
+
+    参数:
+    -----------
+    image_path : str
+        原始图像路径
+    points_path : str
+        中心线点路径
+    save_path : str
+        保存路径
+    fov_mm : int
+        视野大小（毫米）
+    rotation_angle : float or str or list
+        旋转角度，支持：
+        - float: 固定角度（度）
+        - "multi": 生成多角度（0°, 45°, 90°, 135°）
+        - list: 自定义角度列表 [angle1, angle2, ...]
+    """
+    print("=" * 40)
     print("IMAGE PATH:", image_path)
     print("POINTS PATH:", points_path)
     print("SAVE PATH:", save_path if save_path is not None else "reformatted_image.nii.gz")
     print("FIELD OF VIEW (mm):", fov_mm)
-    print("="*40)
+    print("ROTATION ANGLE:", rotation_angle)
+    print("=" * 40)
 
-    # Step 1: Load the image and points
-
-    # Medpy loads the image in this orientation : (x, y, z)
-    # where, the coordinates are with respect to the patient axis
-    # x -> LEFT to RIGHT (SAGITTAL slices)
-    # y -> POSTERIOR to ANTERIOR (CORONAL slices)
-    # z -> INFERIOR to SUPERIOR (AXIAL slices)
-
+    # Step 1: 加载图像和点
     image, h0 = mio.load(image_path)
-    points = np.load(points_path) # Array of shape (N, 3)
+    points = np.load(points_path)  # 形状 (N, 3)
 
     pixel_spacing = h0.get_voxel_spacing()
 
+    # 计算长度
     diff_points = points[1:] - points[:-1]
-    actual_distances = np.sum(np.linalg.norm((diff_points) * np.array(pixel_spacing), axis = 1))
-    pixel_distances = np.insert(np.cumsum(np.linalg.norm(diff_points, axis = 1)), 0, 0)
+    actual_distances = np.sum(np.linalg.norm((diff_points) * np.array(pixel_spacing), axis=1))
+    pixel_distances = np.insert(np.cumsum(np.linalg.norm(diff_points, axis=1)), 0, 0)
     total_pixel_length = pixel_distances[-1]
 
     print(f"Actual Length of the vessel: {actual_distances} mm")
     print(f"Pixel Length of the vessel: {total_pixel_length} pixels")
 
-    # To use Cubic Spline interpoleation to get smoothness in the image
+    # 样条插值
     spline = CubicSpline(pixel_distances, points, bc_type='natural')
-
-    # So num_steps tell the number of output slices that we will have in the reformatted image
-    # For example, if the length of the vessel was 100 pixel
-    # and needed output spacing was 2 pixels worth of 1 mm
-    # that means 100 / 2 = 50 output slices
     num_steps = int(total_pixel_length)
-
-    # So gives a distance array from 0 to total lenfth with skips
-    # so somewhat like [0, 2, 4, 6, ..., total_pixel_length]
     new_dists = np.linspace(0, total_pixel_length, num_steps)
 
-    resampled_points = spline(new_dists) # Shape (num_steps, 3)
+    resampled_points = spline(new_dists)  # 形状 (num_steps, 3)
+    resampled_tangents = spline(new_dists, nu=1)
 
-    resampled_tangents = spline(new_dists, nu = 1)
+    # 处理旋转角度参数
+    if rotation_angle == "multi":
+        rotation_angles = [0, 45, 90, 135]
+    elif isinstance(rotation_angle, list):
+        rotation_angles = rotation_angle
+    else:
+        rotation_angles = [rotation_angle]
+
+    # 为每个角度生成CPR图像
+    for angle_idx, base_angle in enumerate(rotation_angles):
+        print(f"\nProcessing rotation angle: {base_angle}°")
+
+        # 转换角度为弧度
+        angle_rad = np.deg2rad(base_angle)
+
+        # 创建切片网格
+        pixels_per_side = int(fov_mm)
+        half_size = pixels_per_side // 2
+        grid_range = np.arange(-half_size, half_size + 1)
+        u_grid, v_grid = np.meshgrid(grid_range, grid_range)
+        u_flat = u_grid.flatten()
+        v_flat = v_grid.flatten()
+
+        output_slices = []
+        prev_U = None
+
+        # 对于旋转角度重建，需要保持参考向量的一致性
+        # 使用全局参考向量，但应用旋转
+        global_ref_vec = np.array([0, 1, 0])  # 原始参考向量
+
+        for i in range(len(resampled_points)):
+            # 当前点
+            p_curr = resampled_points[i]
+
+            # 切线方向
+            tangent = resampled_tangents[i]
+            t_norm = tangent / np.linalg.norm(tangent)
+
+            # 方法1：基于旋转角度计算U向量
+            # 先计算基础U向量
+            base_u_vec = np.cross(t_norm, global_ref_vec)
+
+            # 处理特殊情况（平行向量）
+            if np.linalg.norm(base_u_vec) < 1e-6:
+                base_u_vec = np.cross(t_norm, np.array([1, 0, 0]))
+
+            # 归一化
+            base_u_norm = base_u_vec / np.linalg.norm(base_u_vec)
+
+            # 计算V向量（完成正交基）
+            base_v_vec = np.cross(t_norm, base_u_norm)
+            base_v_norm = base_v_vec / np.linalg.norm(base_v_vec)
+
+            # 方法2：使用旋转矩阵绕切线方向旋转
+            # 绕切线旋转角度
+            if np.abs(base_angle) > 1e-6:
+                # 创建旋转矩阵（绕切线轴）
+                cos_a = np.cos(angle_rad)
+                sin_a = np.sin(angle_rad)
+
+                # 罗德里格斯旋转公式
+                # R = I + sinθ * K + (1-cosθ) * K²
+                # 其中K是切线向量的叉乘矩阵
+
+                # 更简单的方法：直接旋转U和V向量
+                u_norm = cos_a * base_u_norm + sin_a * base_v_norm
+                v_norm = -sin_a * base_u_norm + cos_a * base_v_norm
+            else:
+                u_norm = base_u_norm
+                v_norm = base_v_norm
+
+            # 确保方向连续性（与前一片对比）
+            if prev_U is not None:
+                # 检查并防止方向翻转
+                if np.dot(u_norm, prev_U) < 0:
+                    u_norm = -u_norm
+                    v_norm = -v_norm
+
+                # 平滑过渡
+                u_norm = (0.9 * prev_U) + (0.1 * u_norm)
+                u_norm = u_norm / np.linalg.norm(u_norm)
+
+                # 重新计算V向量确保正交
+                v_norm = np.cross(t_norm, u_norm)
+                v_norm = v_norm / np.linalg.norm(v_norm)
+
+            prev_U = u_norm
+
+            # 坐标转换
+            center_mm = p_curr * np.array(pixel_spacing)
+            slice_coords_mm = (
+                    center_mm +
+                    np.outer(u_flat, u_norm) +
+                    np.outer(v_flat, v_norm)
+            )
+
+            slice_coords_pix = slice_coords_mm / np.array(pixel_spacing)
+            coords_for_scipy = slice_coords_pix.T
+
+            # 插值
+            slice_pixels = map_coordinates(
+                image,
+                coords_for_scipy,
+                order=1,
+            )
+
+            slice_2d = slice_pixels.reshape(len(grid_range), len(grid_range))
+            output_slices.append(slice_2d)
+
+        # 保存结果
+        if len(rotation_angles) == 1:
+            save_filename = save_path
+        else:
+            # 为多角度生成不同文件名
+            base_name = save_path.replace('.nii.gz', '').replace('.nii', '')
+            save_filename = f"{base_name}_angle{base_angle}.nii.gz"
+
+        # 保存图像
+        output_array = np.array(output_slices)
+        mio.save(output_array, save_filename, h0)
+
+        print(f"Saved CPR image for angle {base_angle}° at {save_filename}")
+
+        # 可视化角度的结果
+        # if angle_idx in [0, 1, 2, 3]:
+        #     visualize_cpr_result(output_array, base_angle)
+
+    return len(rotation_angles)
 
 
-    # Time to create the slice grid
-    # So you want 50 mm field of view with 1 mm spacing,
-    # so 50 pixels on width and breadth
-    pixels_per_side = int(fov_mm)
-    half_size = pixels_per_side // 2
+def visualize_cpr_result(cpr_volume, angle):
+    """
+    可视化CPR结果
 
-    grid_range = np.arange(-half_size, half_size + 1)
+    参数:
+    -----------
+    cpr_volume : numpy.ndarray
+        CPR体积数据，形状 (depth, height, width)
+    angle : float
+        旋转角度
+    """
+    # 创建三个方向的视图
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-    # u_grid -> copying of the grid_range row wise
-    # v_grid -> copying of the grid_range column wise
-    u_grid, v_grid = np.meshgrid(grid_range, grid_range)
+    # 1. 纵向切面（沿着血管长度）
+    ax1 = axes[0, 0]
+    longitudinal_view = np.max(cpr_volume, axis=2)  # 沿宽度方向投影
+    ax1.imshow(longitudinal_view, cmap='gray', aspect='auto', origin='lower')
+    ax1.set_title(f'Longitudinal View (Angle={angle}°)')
+    ax1.set_xlabel('Vessel Length (slices)')
+    ax1.set_ylabel('Cross-section Height')
+    ax1.grid(True, alpha=0.3)
 
-    u_flat = u_grid.flatten()
-    v_flat = v_grid.flatten()
+    # 2. 横截面（选几个位置）
+    ax2 = axes[0, 1]
+    num_slices = cpr_volume.shape[0]
+    sample_indices = [
+        0,
+        num_slices // 4,
+        num_slices // 2,
+        3 * num_slices // 4,
+        num_slices - 1
+    ]
 
-    output_slices = []
-    prev_U = None
-    # reference vector for constructing the orthogonal plane
-    ref_vec = np.array([0, 1, 0]) # Z axis
+    for i, idx in enumerate(sample_indices):
+        if idx < num_slices:
+            cross_section = cpr_volume[idx, :, :]
+            # 稍微偏移每个横截面以便区分
+            offset = i * 5
+            ax2.imshow(cross_section, cmap='gray',
+                       extent=[offset, offset + cpr_volume.shape[2],
+                               0, cpr_volume.shape[1]],
+                       alpha=0.7, origin='lower')
 
-    for i in range(len(resampled_points)):
-        # The resampled point at which the slice is to be taken
-        p_curr = resampled_points[i]
+    ax2.set_title(f'Cross-sections at Different Positions (Angle={angle}°)')
+    ax2.set_xlabel('Cross-section Width')
+    ax2.set_ylabel('Cross-section Height')
+    ax2.set_xlim([0, 5 * cpr_volume.shape[2]])
+    ax2.grid(True, alpha=0.3)
 
-        # This tangent is the vector pointing along the vessel direction
-        tangent = resampled_tangents[i]
+    # 3. 3D CPR体积视图
+    ax3 = axes[1, 0]
+    volume_mip = np.max(cpr_volume, axis=0)
+    ax3.imshow(volume_mip, cmap='gray', origin='lower')
+    ax3.set_title(f'CPR Volume MIP (Angle={angle}°)')
+    ax3.set_xlabel('Cross-section Width')
+    ax3.set_ylabel('Cross-section Height')
+    ax3.grid(True, alpha=0.3)
 
-        # Normalize the tangent
-        t_norm = tangent / np.linalg.norm(tangent)
+    # 4. 角度说明
+    ax4 = axes[1, 1]
+    ax4.axis('off')
 
-        # Compute orthogonal vectors between the tangent and reference vector
-        u_vec = np.cross(t_norm, ref_vec)
+    # 绘制角度示意图
+    circle = plt.Circle((0.5, 0.5), 0.3, fill=False, linewidth=2)
+    ax4.add_patch(circle)
 
-        # if the u_vec is close to zero vecotr, happens only when both are parallel or coincident
-        # Suppose the t_vec = [0, 1, 0] and ref_vec = [0, 1, 0]
-        # Cross product will give [0, 0, 0] or undefined direction
-        # So we have to use another vector for cross product
+    # 绘制参考线
+    ax4.plot([0.5, 0.8], [0.5, 0.5], 'k--', alpha=0.5, label='0° reference')
 
-        if np.linalg.norm(u_vec) < 1e-6:
-            # Hence the use of X axis that is [1, 0, 0]
-            u_vec = np.cross(t_norm, np.array([1, 0, 0]))
+    # 绘制角度线
+    angle_rad = np.deg2rad(angle)
+    end_x = 0.5 + 0.3 * np.cos(angle_rad)
+    end_y = 0.5 + 0.3 * np.sin(angle_rad)
+    ax4.plot([0.5, end_x], [0.5, end_y], 'r-', linewidth=3,
+             label=f'Angle = {angle}°')
 
-        # Once we got the orthogonal vector, normalize it
-        u_norm = u_vec / np.linalg.norm(u_vec)
+    ax4.set_xlim([0, 1])
+    ax4.set_ylim([0, 1])
+    ax4.set_aspect('equal')
+    ax4.set_title('Rotation Angle Visualization')
+    ax4.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1))
 
-        # IF prev_U is not None, that means it is not the first slice
-        # and also the direction of the first point should be consistent and along with the same direction for the subsequent points
-        if prev_U is not None:
-            # To ensure smoothness of the plane orientation
-            # If the current u_norm is opposite to the previous u_norm, flip it
-            # Cause coss product some times leads to direction flipping
-            # cant help it!!
-            if np.dot(u_norm, prev_U) < 0:
-                u_norm = -u_norm
-
-        # now again if is not the starting slice
-        if prev_U is not None:
-            # That can be done by using this method
-            # that is use 90% of the previous slice and 10% of the current slice to ensure smootheness
-            u_norm = (0.9 * prev_U) + (0.1 * u_norm)
-            # and NORMALIIIIZEEEE
-            u_norm = u_norm / np.linalg.norm(u_norm)
-
-        # And update with the current u_norm to prev_U
-        prev_U = u_norm
-
-        # Once done,
-        v_vec = np.cross(t_norm, u_norm)
-        v_norm = v_vec / np.linalg.norm(v_vec)
-
-        center_mm = p_curr * np.array(pixel_spacing)
-
-        slice_coords_mm = (
-            center_mm +
-            np.outer(u_flat, u_norm) +
-            np.outer(v_flat, v_norm)
-        )
-
-        slice_coords_pix = slice_coords_mm / np.array(pixel_spacing)
-        coords_for_scipy = slice_coords_pix.T
-
-        slice_pixels = map_coordinates(
-            image,
-            coords_for_scipy,
-            order=1,
-        )
-
-        slice_2d = slice_pixels.reshape(len(grid_range), len(grid_range))
-        output_slices.append(slice_2d)
-
-    mio.save(np.array(output_slices), save_path if save_path is not None else "reformatted_image.nii.gz", h0)
-
-    print(f"Saved reformatted image at {save_path if save_path is not None else 'reformatted_image.nii.gz'}")
+    plt.suptitle(f'Curved Planar Reformation Results (Rotation Angle: {angle}°)',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
 
 def visualize_multi_mip(binary_data, skeleton_data):
     """
