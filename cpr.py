@@ -413,81 +413,162 @@ def visualize_extracted_paths(volume, paths, title="Extracted Centerline Paths")
 
     fig = plt.figure(figsize=(15, 5))
 
-    # 创建三个方向的投影
-    mip_xy = np.max(volume, axis=2)
-    mip_xz = np.max(volume, axis=1)
-    mip_yz = np.max(volume, axis=0)
+    # 获取体积数据的形状
+    vol_shape = volume.shape  # 顺序为 (z, y, x)
 
-    # 绘制XY平面
+    # 创建三个方向的投影
+    mip_xy = np.max(volume, axis=0)  # XY平面，沿着Z轴投影
+    mip_xz = np.max(volume, axis=1)  # XZ平面，沿着Y轴投影
+    mip_yz = np.max(volume, axis=2)  # YZ平面，沿着X轴投影
+
+    # 绘制XY平面 (Z轴投影)
     ax1 = fig.add_subplot(131)
-    ax1.imshow(mip_xy, cmap='gray', alpha=0.7, origin='lower')
-    ax1.set_title('XY Plane (Axial)')
+    ax1.imshow(mip_xy, cmap='gray', alpha=0.7, origin='lower',
+               extent=[0, vol_shape[2], 0, vol_shape[1]])
+    ax1.set_title('XY Plane (Axial View)')
     ax1.set_xlabel('X (voxels)')
     ax1.set_ylabel('Y (voxels)')
+    ax1.grid(True, alpha=0.3, linestyle='--')
 
-    # 绘制XZ平面
+    # 绘制XZ平面 (Y轴投影)
     ax2 = fig.add_subplot(132)
-    ax2.imshow(mip_xz, cmap='gray', alpha=0.7, origin='lower')
-    ax2.set_title('XZ Plane (Coronal)')
+    ax2.imshow(mip_xz, cmap='gray', alpha=0.7, origin='lower',
+               extent=[0, vol_shape[2], 0, vol_shape[0]])
+    ax2.set_title('XZ Plane (Coronal View)')
     ax2.set_xlabel('X (voxels)')
     ax2.set_ylabel('Z (voxels)')
+    ax2.grid(True, alpha=0.3, linestyle='--')
 
-    # 绘制YZ平面
+    # 绘制YZ平面 (X轴投影)
     ax3 = fig.add_subplot(133)
-    ax3.imshow(mip_yz, cmap='gray', alpha=0.7, origin='lower')
-    ax3.set_title('YZ Plane (Sagittal)')
+    ax3.imshow(mip_yz, cmap='gray', alpha=0.7, origin='lower',
+               extent=[0, vol_shape[1], 0, vol_shape[0]])
+    ax3.set_title('YZ Plane (Sagittal View)')
     ax3.set_xlabel('Y (voxels)')
     ax3.set_ylabel('Z (voxels)')
+    ax3.grid(True, alpha=0.3, linestyle='--')
 
     # 在三个平面上绘制所有路径
     for i, path in enumerate(paths):
+        if len(path) == 0:
+            continue
+
         color = colors[i % len(colors)]
 
-        if len(path) > 0:
-            # XY投影
-            ax1.scatter(path[:, 1], path[:, 0], s=5, c=color, alpha=0.7,
-                        label=f'Path {i + 1} ({len(path)} pts)')
-            ax1.plot(path[:, 1], path[:, 0], color=color, alpha=0.5, linewidth=1)
+        # 路径坐标：path 的形状为 (n_points, 3)，顺序为 [z, y, x]
+        z_coords = path[:, 0]
+        y_coords = path[:, 1]
+        x_coords = path[:, 2]
 
-            # XZ投影
-            ax2.scatter(path[:, 1], path[:, 2], s=5, c=color, alpha=0.7)
-            ax2.plot(path[:, 1], path[:, 2], color=color, alpha=0.5, linewidth=1)
+        # XY平面 (Axial): 显示X和Y坐标，用颜色表示Z深度
+        scatter_xy = ax1.scatter(x_coords, y_coords, s=15, c=color, alpha=0.8,
+                                 label=f'Path {i + 1} ({len(path)} pts)')
+        ax1.plot(x_coords, y_coords, color=color, alpha=0.6, linewidth=1.5)
 
-            # YZ投影
-            ax3.scatter(path[:, 0], path[:, 2], s=5, c=color, alpha=0.7)
-            ax3.plot(path[:, 0], path[:, 2], color=color, alpha=0.5, linewidth=1)
+        # XZ平面 (Coronal): 显示X和Z坐标，用颜色表示Y深度
+        scatter_xz = ax2.scatter(x_coords, z_coords, s=15, c=color, alpha=0.8)
+        ax2.plot(x_coords, z_coords, color=color, alpha=0.6, linewidth=1.5)
 
-    ax1.legend(loc='upper right', fontsize=8)
-    plt.suptitle(title, fontsize=14)
-    plt.tight_layout()
+        # YZ平面 (Sagittal): 显示Y和Z坐标，用颜色表示X深度
+        scatter_yz = ax3.scatter(y_coords, z_coords, s=15, c=color, alpha=0.8)
+        ax3.plot(y_coords, z_coords, color=color, alpha=0.6, linewidth=1.5)
+
+    # 添加图例
+    ax1.legend(loc='best', fontsize=9)
+
+    # 设置统一的坐标范围
+    ax1.set_xlim([0, vol_shape[2]])
+    ax1.set_ylim([0, vol_shape[1]])
+    ax2.set_xlim([0, vol_shape[2]])
+    ax2.set_ylim([0, vol_shape[0]])
+    ax3.set_xlim([0, vol_shape[1]])
+    ax3.set_ylim([0, vol_shape[0]])
+
+    # 调整布局
+    plt.suptitle(title, fontsize=14, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.show()
 
-    # 3D可视化
-    fig_3d = plt.figure(figsize=(10, 8))
+    # 3D可视化（可选）
+    plot_3d_view(volume, paths)
+
+
+def plot_3d_view(volume, paths):
+    """
+    3D可视化函数
+    """
+    fig_3d = plt.figure(figsize=(12, 10))
     ax_3d = fig_3d.add_subplot(111, projection='3d')
 
-    # 绘制体积的边界框
-    z, y, x = np.where(volume > 0)
-    if len(x) > 0:
-        ax_3d.scatter(x, y, z, c='gray', alpha=0.1, s=1)
+    # 获取体积边界
+    vol_shape = volume.shape
+
+    # 创建颜色映射
+    colors = ['red', 'green', 'blue', 'orange', 'purple']
+
+    # 绘制体积的边界框（可选）
+    # 可以绘制稀疏的采样点来显示体积的大致范围
+    if np.sum(volume) < 1000000:  # 如果体积不是太大
+        z_idx, y_idx, x_idx = np.where(volume > 0)
+        if len(x_idx) > 0:
+            # 随机采样一部分点避免渲染过慢
+            sample_size = min(10000, len(x_idx))
+            indices = np.random.choice(len(x_idx), sample_size, replace=False)
+            ax_3d.scatter(x_idx[indices], y_idx[indices], z_idx[indices],
+                          c='lightgray', alpha=0.05, s=1, marker='.')
 
     # 绘制每条路径
     for i, path in enumerate(paths):
-        if len(path) > 0:
-            color = colors[i % len(colors)]
-            # 注意：numpy的坐标顺序是 (z, y, x)，但3D绘图通常用 (x, y, z)
-            ax_3d.plot(path[:, 1], path[:, 0], path[:, 2],
-                       color=color, linewidth=2, alpha=0.8,
-                       label=f'Path {i + 1} ({len(path)} pts)')
-            ax_3d.scatter(path[:, 1], path[:, 0], path[:, 2],
-                          color=color, s=20, alpha=0.6)
+        if len(path) == 0:
+            continue
 
-    ax_3d.set_xlabel('X (voxels)')
-    ax_3d.set_ylabel('Y (voxels)')
-    ax_3d.set_zlabel('Z (voxels)')
-    ax_3d.set_title('3D View of Extracted Centerlines')
-    ax_3d.legend()
+        color = colors[i % len(colors)]
+        x_coords = path[:, 2]
+        y_coords = path[:, 1]
+        z_coords = path[:, 0]
+
+        # 绘制3D路径
+        ax_3d.plot(x_coords, y_coords, z_coords,
+                   color=color, linewidth=3, alpha=0.8,
+                   label=f'Path {i + 1} ({len(path)} pts)')
+
+        # 绘制路径点
+        ax_3d.scatter(x_coords, y_coords, z_coords,
+                      color=color, s=30, alpha=0.8, depthshade=True)
+
+        # 标记起点和终点
+        if len(path) > 0:
+            # 起点
+            ax_3d.scatter(x_coords[0], y_coords[0], z_coords[0],
+                          color='yellow', s=100, marker='o', edgecolors='black',
+                          label=f'Start {i + 1}' if i == 0 else "")
+
+            # 终点
+            ax_3d.scatter(x_coords[-1], y_coords[-1], z_coords[-1],
+                          color='cyan', s=100, marker='s', edgecolors='black',
+                          label=f'End {i + 1}' if i == 0 else "")
+
+    # 设置坐标轴标签（注意：numpy坐标顺序是 (z, y, x)，但3D绘图通常用 (x, y, z)）
+    ax_3d.set_xlabel('X (voxels)', fontsize=12)
+    ax_3d.set_ylabel('Y (voxels)', fontsize=12)
+    ax_3d.set_zlabel('Z (voxels)', fontsize=12)
+
+    # 设置坐标范围
+    ax_3d.set_xlim([0, vol_shape[2]])
+    ax_3d.set_ylim([0, vol_shape[1]])
+    ax_3d.set_zlim([0, vol_shape[0]])
+
+    # 设置视角
+    ax_3d.view_init(elev=20, azim=45)
+
+    ax_3d.set_title('3D View of Extracted Centerlines', fontsize=14, fontweight='bold')
+    ax_3d.legend(loc='upper right', fontsize=9)
     ax_3d.grid(True, alpha=0.3)
+
+    # 添加坐标轴刻度
+    ax_3d.set_xticks(np.linspace(0, vol_shape[2], 5))
+    ax_3d.set_yticks(np.linspace(0, vol_shape[1], 5))
+    ax_3d.set_zticks(np.linspace(0, vol_shape[0], 5))
 
     plt.tight_layout()
     plt.show()
