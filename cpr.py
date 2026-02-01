@@ -7,6 +7,7 @@ from itertools import product
 from collections import defaultdict, deque
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import networkx as nx
 
 def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
     print("="*40)
@@ -17,14 +18,14 @@ def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
     print("="*40)
 
     # Step 1: Load the image and points
-    
+
     # Medpy loads the image in this orientation : (x, y, z)
     # where, the coordinates are with respect to the patient axis
     # x -> LEFT to RIGHT (SAGITTAL slices)
     # y -> POSTERIOR to ANTERIOR (CORONAL slices)
     # z -> INFERIOR to SUPERIOR (AXIAL slices)
-    
-    image, h0 = mio.load(image_path) 
+
+    image, h0 = mio.load(image_path)
     points = np.load(points_path) # Array of shape (N, 3)
 
     pixel_spacing = h0.get_voxel_spacing()
@@ -41,7 +42,7 @@ def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
     spline = CubicSpline(pixel_distances, points, bc_type='natural')
 
     # So num_steps tell the number of output slices that we will have in the reformatted image
-    # For example, if the length of the vessel was 100 pixel 
+    # For example, if the length of the vessel was 100 pixel
     # and needed output spacing was 2 pixels worth of 1 mm
     # that means 100 / 2 = 50 output slices
     num_steps = int(total_pixel_length)
@@ -56,7 +57,7 @@ def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
 
 
     # Time to create the slice grid
-    # So you want 50 mm field of view with 1 mm spacing, 
+    # So you want 50 mm field of view with 1 mm spacing,
     # so 50 pixels on width and breadth
     pixels_per_side = int(fov_mm)
     half_size = pixels_per_side // 2
@@ -92,7 +93,7 @@ def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
         # Suppose the t_vec = [0, 1, 0] and ref_vec = [0, 1, 0]
         # Cross product will give [0, 0, 0] or undefined direction
         # So we have to use another vector for cross product
-    
+
         if np.linalg.norm(u_vec) < 1e-6:
             # Hence the use of X axis that is [1, 0, 0]
             u_vec = np.cross(t_norm, np.array([1, 0, 0]))
@@ -121,7 +122,7 @@ def curve_planar_reformat(image_path, points_path, save_path, fov_mm = 50):
         # And update with the current u_norm to prev_U
         prev_U = u_norm
 
-        # Once done, 
+        # Once done,
         v_vec = np.cross(t_norm, u_norm)
         v_norm = v_vec / np.linalg.norm(v_vec)
 
@@ -270,88 +271,257 @@ def visualize_multi_mip(binary_data, skeleton_data):
     # print(f"  Centerline MIP non-zero voxels: {np.sum(mip_yz_skel > 0)}")
     # print(f"  Vessel MIP non-zero voxels: {np.sum(mip_yz_vol > 0)}")
 
-def extract_coordinates(seg_path, save_path=None, skip=10):
 
-    print("="*40)
+def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_branches=3):
+    """
+    提取多分支中心线，保存最长的若干条路径
+
+    参数:
+    -----------
+    seg_path : str
+        分割图像的路径
+    save_path : str or None
+        保存点集的路径
+    skip : int
+        采样间隔
+    max_branches : int
+        最大保留的路径数量
+
+    返回:
+    -----------
+    List[np.ndarray]
+        提取的中心线路径列表，按长度排序
+    """
+    print("=" * 40)
     print("SEGMENTATION PATH:", seg_path)
     print("SAVE_PATH:", save_path if save_path is not None else "./points.npy")
     print("SKIP FACTOR:", skip)
-    print("="*40)
+    print("MAX BRANCHES:", max_branches)
+    print("=" * 40)
 
-    # 1. Load and skeletonize
+    # 1. 加载并骨架化
     seg, _ = mio.load(seg_path)
-    seg_bin = (seg > 0)
+    seg_bin = (seg > 0).astype(np.uint8)
 
     skeleton = skeletonize(seg_bin)
     coords = np.array(np.nonzero(skeleton)).T  # (N, 3)
 
-    print("Total skeleton points:", coords.shape[0])
+    print(f"Total skeleton points: {coords.shape[0]}")
+
     # 可视化
     #visualize_multi_mip(seg, skeleton)
 
     if coords.shape[0] < 2:
-        print("Not enough sementation points to extract centerline!!")
-        print("Extraction failed.")
-        return False
+        print("Not enough skeleton points to extract centerline!")
+        return []
 
+    # 2. 构建图结构
     coord_set = set(map(tuple, coords))
+    G = nx.Graph()
+    G.add_nodes_from(coord_set)
 
-    neighbors = defaultdict(list)
-
+    # 定义26邻域
     directions = list(product([-1, 0, 1], repeat=3))
     directions.remove((0, 0, 0))
 
-    for c in coord_set:
+    for node in coord_set:
         for d in directions:
-            n = (c[0] + d[0], c[1] + d[1], c[2] + d[2])
-            if n in coord_set:
-                neighbors[c].append(n)
+            neighbor = (node[0] + d[0], node[1] + d[1], node[2] + d[2])
+            if neighbor in coord_set:
+                G.add_edge(node, neighbor)
 
-    degrees = {k: len(v) for k, v in neighbors.items()}
+    print(f"Graph nodes: {G.number_of_nodes()}, edges: {G.number_of_edges()}")
 
-    if any(deg > 2 for deg in degrees.values()):
-        print("Warning::There is a branch in the skeleton, cannot extract a single centerline.")
-        # print("Extraction failed.")
-        # return False
+    # 3. 找到所有端点（度数为1的节点）
+    endpoints = [node for node, degree in dict(G.degree()).items() if degree == 1]
+    print(f"Found {len(endpoints)} endpoints")
 
-    endpoints = [k for k, deg in degrees.items() if deg == 1]
+    if len(endpoints) < 2:
+        print("Not enough endpoints to form a path!")
+        return []
 
-    if len(endpoints) != 2:
-        print("Warning::The skeleton does not have exactly two endpoints.")
-        # print("Extraction failed.")
-        # return False
+    # 4. 使用BFS找到所有可能的路径
+    all_paths = []
 
-    start = endpoints[0]
+    for start in endpoints:
+        for end in endpoints:
+            if start != end:
+                try:
+                    path = nx.shortest_path(G, start, end)
+                    if len(path) > 2:  # 排除非常短的路径
+                        all_paths.append(path)
+                except nx.NetworkXNoPath:
+                    continue
 
-    ordered = []
-    visited = set()
+    # 5. 去重和排序
+    unique_paths = []
+    seen_paths = set()
 
-    curr = start
-    prev = None
+    for path in all_paths:
+        # 转换为元组并排序以确保方向一致性
+        path_tuple = tuple(sorted([path[0], path[-1]]))
+        if path_tuple not in seen_paths:
+            seen_paths.add(path_tuple)
+            unique_paths.append(path)
 
-    while True:
-        ordered.append(curr)
-        visited.add(curr)
+    # 按长度排序
+    unique_paths.sort(key=lambda x: len(x), reverse=True)
 
-        next_candidates = [
-            n for n in neighbors[curr]
-            if n != prev
-        ]
+    # 6. 限制路径数量
+    top_paths = unique_paths[:max_branches]
 
-        if not next_candidates:
-            break
+    print(f"Found {len(top_paths)} distinct centerline paths")
+    for i, path in enumerate(top_paths):
+        print(f"  Path {i + 1}: {len(path)} points")
 
-        next_node = next_candidates[0]
-        prev, curr = curr, next_node
+    # 7. 转换为numpy数组并下采样
+    result_paths = []
+    for i, path in enumerate(top_paths):
+        path_array = np.array(path)
+        if skip > 1:
+            path_array = path_array[::skip]
 
-        if curr in visited:
-            break
+        # 保存每条路径
+        if save_path:
+            base_name = save_path.replace('.npy', '')
+            path_save_name = f"{base_name}_path_{i + 1}.npy"
+            np.save(path_save_name, path_array)
+            print(f"Saved path {i + 1} to {path_save_name}")
 
-    ordered = np.array(ordered)
+        result_paths.append(path_array)
 
-    if skip > 1:
-        ordered = ordered[::skip]
+    # 8. 可视化提取的路径
+    visualize_extracted_paths(seg, result_paths)
 
-    np.save(save_path if save_path is not None else "points.npy", ordered)
+    return result_paths
 
-    return ordered
+def visualize_extracted_paths(volume, paths, title="Extracted Centerline Paths"):
+    """
+    可视化提取的中心线路径
+
+    参数:
+    -----------
+    volume : numpy.ndarray
+        原始体积数据
+    paths : List[np.ndarray]
+        中心线路径列表
+    title : str
+        图像标题
+    """
+    # 创建颜色映射
+    colors = ['red', 'green', 'blue', 'orange', 'purple']
+
+    fig = plt.figure(figsize=(15, 5))
+
+    # 创建三个方向的投影
+    mip_xy = np.max(volume, axis=2)
+    mip_xz = np.max(volume, axis=1)
+    mip_yz = np.max(volume, axis=0)
+
+    # 绘制XY平面
+    ax1 = fig.add_subplot(131)
+    ax1.imshow(mip_xy, cmap='gray', alpha=0.7, origin='lower')
+    ax1.set_title('XY Plane (Axial)')
+    ax1.set_xlabel('X (voxels)')
+    ax1.set_ylabel('Y (voxels)')
+
+    # 绘制XZ平面
+    ax2 = fig.add_subplot(132)
+    ax2.imshow(mip_xz, cmap='gray', alpha=0.7, origin='lower')
+    ax2.set_title('XZ Plane (Coronal)')
+    ax2.set_xlabel('X (voxels)')
+    ax2.set_ylabel('Z (voxels)')
+
+    # 绘制YZ平面
+    ax3 = fig.add_subplot(133)
+    ax3.imshow(mip_yz, cmap='gray', alpha=0.7, origin='lower')
+    ax3.set_title('YZ Plane (Sagittal)')
+    ax3.set_xlabel('Y (voxels)')
+    ax3.set_ylabel('Z (voxels)')
+
+    # 在三个平面上绘制所有路径
+    for i, path in enumerate(paths):
+        color = colors[i % len(colors)]
+
+        if len(path) > 0:
+            # XY投影
+            ax1.scatter(path[:, 1], path[:, 0], s=5, c=color, alpha=0.7,
+                        label=f'Path {i + 1} ({len(path)} pts)')
+            ax1.plot(path[:, 1], path[:, 0], color=color, alpha=0.5, linewidth=1)
+
+            # XZ投影
+            ax2.scatter(path[:, 1], path[:, 2], s=5, c=color, alpha=0.7)
+            ax2.plot(path[:, 1], path[:, 2], color=color, alpha=0.5, linewidth=1)
+
+            # YZ投影
+            ax3.scatter(path[:, 0], path[:, 2], s=5, c=color, alpha=0.7)
+            ax3.plot(path[:, 0], path[:, 2], color=color, alpha=0.5, linewidth=1)
+
+    ax1.legend(loc='upper right', fontsize=8)
+    plt.suptitle(title, fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+    # 3D可视化
+    fig_3d = plt.figure(figsize=(10, 8))
+    ax_3d = fig_3d.add_subplot(111, projection='3d')
+
+    # 绘制体积的边界框
+    z, y, x = np.where(volume > 0)
+    if len(x) > 0:
+        ax_3d.scatter(x, y, z, c='gray', alpha=0.1, s=1)
+
+    # 绘制每条路径
+    for i, path in enumerate(paths):
+        if len(path) > 0:
+            color = colors[i % len(colors)]
+            # 注意：numpy的坐标顺序是 (z, y, x)，但3D绘图通常用 (x, y, z)
+            ax_3d.plot(path[:, 1], path[:, 0], path[:, 2],
+                       color=color, linewidth=2, alpha=0.8,
+                       label=f'Path {i + 1} ({len(path)} pts)')
+            ax_3d.scatter(path[:, 1], path[:, 0], path[:, 2],
+                          color=color, s=20, alpha=0.6)
+
+    ax_3d.set_xlabel('X (voxels)')
+    ax_3d.set_ylabel('Y (voxels)')
+    ax_3d.set_zlabel('Z (voxels)')
+    ax_3d.set_title('3D View of Extracted Centerlines')
+    ax_3d.legend()
+    ax_3d.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+def extract_coordinates(seg_path, save_path=None, skip=10):
+    """
+    向后兼容的单一中心线提取函数
+    """
+    print("=" * 40)
+    print("SEGMENTATION PATH:", seg_path)
+    print("SAVE_PATH:", save_path if save_path is not None else "./points.npy")
+    print("SKIP FACTOR:", skip)
+    print("=" * 40)
+
+    # 1. Load and skeletonize
+    seg, _ = mio.load(seg_path)
+    seg_bin = (seg > 0)
+    skeleton = skeletonize(seg_bin)
+    coords = np.array(np.nonzero(skeleton)).T  # (N, 3)
+
+    print("Total skeleton points:", coords.shape[0])
+
+    if coords.shape[0] < 2:
+        print("Not enough skeleton points to extract centerline!!")
+        print("Extraction failed.")
+        return False
+
+    # 使用新的多分支提取函数，但只取第一条路径
+    paths = extract_multi_branch_centerlines(seg_path, save_path, skip, max_branches=1)
+
+    if len(paths) > 0:
+        ordered = paths[0]
+        if save_path:
+            np.save(save_path, ordered)
+        return ordered
+    else:
+        return False
