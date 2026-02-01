@@ -395,6 +395,7 @@ def extract_multi_branch_centerlines(seg_path, save_path=None, skip=10, max_bran
 
     return result_paths
 
+
 def visualize_extracted_paths(volume, paths, title="Extracted Centerline Paths"):
     """
     可视化提取的中心线路径
@@ -402,9 +403,9 @@ def visualize_extracted_paths(volume, paths, title="Extracted Centerline Paths")
     参数:
     -----------
     volume : numpy.ndarray
-        原始体积数据
+        原始体积数据，形状顺序为 (x, y, z)
     paths : List[np.ndarray]
-        中心线路径列表
+        中心线路径列表，每个路径形状为 (n_points, 3)，顺序为 [x, y, z]
     title : str
         图像标题
     """
@@ -413,39 +414,45 @@ def visualize_extracted_paths(volume, paths, title="Extracted Centerline Paths")
 
     fig = plt.figure(figsize=(15, 5))
 
-    # 获取体积数据的形状
-    vol_shape = volume.shape  # 顺序为 (z, y, x)
+    # 获取体积数据的形状（注意：现在volume是(x, y, z)顺序）
+    vol_shape = volume.shape  # 顺序为 (x, y, z)
 
-    # 创建三个方向的投影
-    mip_xy = np.max(volume, axis=0)  # XY平面，沿着Z轴投影
-    mip_xz = np.max(volume, axis=1)  # XZ平面，沿着Y轴投影
-    mip_yz = np.max(volume, axis=2)  # YZ平面，沿着X轴投影
+    # 修正：创建三个方向的投影（根据新的坐标顺序）
+    # 原来的逻辑需要调整：
+    # XY平面（沿着Z轴投影）：np.max(volume, axis=2)
+    # XZ平面（沿着Y轴投影）：np.max(volume, axis=1)
+    # YZ平面（沿着X轴投影）：np.max(volume, axis=0)
 
-    # 绘制XY平面 (Z轴投影)
+    # 根据你的要求交换XY和YZ平面：
+    mip_xy = np.max(volume, axis=2)  # XY平面，沿着Z轴投影（X-Y平面，显示Z方向投影）
+    mip_xz = np.max(volume, axis=1)  # XZ平面，沿着Y轴投影（X-Z平面，显示Y方向投影）
+    mip_yz = np.max(volume, axis=0)  # YZ平面，沿着X轴投影（Y-Z平面，显示X方向投影）
+
+    # 绘制XY平面 (Z轴投影) - 现在这是第一个子图
     ax1 = fig.add_subplot(131)
     ax1.imshow(mip_xy, cmap='gray', alpha=0.7, origin='lower',
-               extent=[0, vol_shape[2], 0, vol_shape[1]])
+               extent=[0, vol_shape[1], 0, vol_shape[0]])  # 注意：X对应宽度，Y对应高度
     ax1.set_title('XY Plane (Axial View)')
-    ax1.set_xlabel('X (voxels)')
-    ax1.set_ylabel('Y (voxels)')
+    ax1.set_xlabel('Y (voxels)')
+    ax1.set_ylabel('X (voxels)')  # 注意：这里交换了标签
     ax1.grid(True, alpha=0.3, linestyle='--')
 
-    # 绘制XZ平面 (Y轴投影)
+    # 绘制XZ平面 (Y轴投影) - 保持中间位置
     ax2 = fig.add_subplot(132)
     ax2.imshow(mip_xz, cmap='gray', alpha=0.7, origin='lower',
-               extent=[0, vol_shape[2], 0, vol_shape[0]])
+               extent=[0, vol_shape[2], 0, vol_shape[0]])  # X对应宽度，Z对应高度
     ax2.set_title('XZ Plane (Coronal View)')
-    ax2.set_xlabel('X (voxels)')
-    ax2.set_ylabel('Z (voxels)')
+    ax2.set_xlabel('Z (voxels)')
+    ax2.set_ylabel('X (voxels)')  # 注意：这里调整了标签
     ax2.grid(True, alpha=0.3, linestyle='--')
 
-    # 绘制YZ平面 (X轴投影)
+    # 绘制YZ平面 (X轴投影) - 现在这是第三个子图，与原来的XY平面交换
     ax3 = fig.add_subplot(133)
     ax3.imshow(mip_yz, cmap='gray', alpha=0.7, origin='lower',
-               extent=[0, vol_shape[1], 0, vol_shape[0]])
+               extent=[0, vol_shape[2], 0, vol_shape[1]])  # Y对应宽度，Z对应高度
     ax3.set_title('YZ Plane (Sagittal View)')
-    ax3.set_xlabel('Y (voxels)')
-    ax3.set_ylabel('Z (voxels)')
+    ax3.set_xlabel('Z (voxels)')
+    ax3.set_ylabel('Y (voxels)')  # 注意：这里调整了标签
     ax3.grid(True, alpha=0.3, linestyle='--')
 
     # 在三个平面上绘制所有路径
@@ -455,63 +462,64 @@ def visualize_extracted_paths(volume, paths, title="Extracted Centerline Paths")
 
         color = colors[i % len(colors)]
 
-        # 路径坐标：path 的形状为 (n_points, 3)，顺序为 [z, y, x]
-        z_coords = path[:, 0]
+        # 路径坐标：path 的形状为 (n_points, 3)，顺序为 [x, y, z]
+        x_coords = path[:, 0]
         y_coords = path[:, 1]
-        x_coords = path[:, 2]
+        z_coords = path[:, 2]
 
-        # XY平面 (Axial): 显示X和Y坐标，用颜色表示Z深度
-        scatter_xy = ax1.scatter(x_coords, y_coords, s=15, c=color, alpha=0.8,
-                                 label=f'Path {i + 1} ({len(path)} pts)')
-        ax1.plot(x_coords, y_coords, color=color, alpha=0.6, linewidth=1.5)
+        # XY平面 (Axial): 显示X和Y坐标
+        # 注意：imshow显示时，第一个维度是行（Y），第二个维度是列（X）
+        # 但在scatter/plot中，x参数对应列（imshow的第二个维度），y参数对应行（imshow的第一个维度）
+        ax1.scatter(y_coords, x_coords, s=15, c=color, alpha=0.8,
+                    label=f'Path {i + 1} ({len(path)} pts)')
+        ax1.plot(y_coords, x_coords, color=color, alpha=0.6, linewidth=1.5)
 
-        # XZ平面 (Coronal): 显示X和Z坐标，用颜色表示Y深度
-        scatter_xz = ax2.scatter(x_coords, z_coords, s=15, c=color, alpha=0.8)
-        ax2.plot(x_coords, z_coords, color=color, alpha=0.6, linewidth=1.5)
+        # XZ平面 (Coronal): 显示X和Z坐标
+        ax2.scatter(z_coords, x_coords, s=15, c=color, alpha=0.8)
+        ax2.plot(z_coords, x_coords, color=color, alpha=0.6, linewidth=1.5)
 
-        # YZ平面 (Sagittal): 显示Y和Z坐标，用颜色表示X深度
-        scatter_yz = ax3.scatter(y_coords, z_coords, s=15, c=color, alpha=0.8)
-        ax3.plot(y_coords, z_coords, color=color, alpha=0.6, linewidth=1.5)
+        # YZ平面 (Sagittal): 显示Y和Z坐标
+        ax3.scatter(z_coords, y_coords, s=15, c=color, alpha=0.8)
+        ax3.plot(z_coords, y_coords, color=color, alpha=0.6, linewidth=1.5)
 
     # 添加图例
     ax1.legend(loc='best', fontsize=9)
 
     # 设置统一的坐标范围
-    ax1.set_xlim([0, vol_shape[2]])
-    ax1.set_ylim([0, vol_shape[1]])
-    ax2.set_xlim([0, vol_shape[2]])
-    ax2.set_ylim([0, vol_shape[0]])
-    ax3.set_xlim([0, vol_shape[1]])
-    ax3.set_ylim([0, vol_shape[0]])
+    ax1.set_xlim([0, vol_shape[1]])  # Y轴范围
+    ax1.set_ylim([0, vol_shape[0]])  # X轴范围
+    ax2.set_xlim([0, vol_shape[2]])  # Z轴范围
+    ax2.set_ylim([0, vol_shape[0]])  # X轴范围
+    ax3.set_xlim([0, vol_shape[2]])  # Z轴范围
+    ax3.set_ylim([0, vol_shape[1]])  # Y轴范围
 
     # 调整布局
     plt.suptitle(title, fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.show()
 
-    # 3D可视化（可选）
+    # 3D可视化（可选） - 也需要相应调整
     plot_3d_view(volume, paths)
 
 
 def plot_3d_view(volume, paths):
     """
-    3D可视化函数
+    3D可视化函数 - 需要相应调整
     """
     fig_3d = plt.figure(figsize=(12, 10))
     ax_3d = fig_3d.add_subplot(111, projection='3d')
 
-    # 获取体积边界
+    # 获取体积边界（注意：volume现在是(x, y, z)顺序）
     vol_shape = volume.shape
 
     # 创建颜色映射
     colors = ['red', 'green', 'blue', 'orange', 'purple']
 
     # 绘制体积的边界框（可选）
-    # 可以绘制稀疏的采样点来显示体积的大致范围
     if np.sum(volume) < 1000000:  # 如果体积不是太大
-        z_idx, y_idx, x_idx = np.where(volume > 0)
+        # 注意：现在volume是(x, y, z)顺序，np.where返回的也是这个顺序
+        x_idx, y_idx, z_idx = np.where(volume > 0)
         if len(x_idx) > 0:
-            # 随机采样一部分点避免渲染过慢
             sample_size = min(10000, len(x_idx))
             indices = np.random.choice(len(x_idx), sample_size, replace=False)
             ax_3d.scatter(x_idx[indices], y_idx[indices], z_idx[indices],
@@ -523,9 +531,9 @@ def plot_3d_view(volume, paths):
             continue
 
         color = colors[i % len(colors)]
-        x_coords = path[:, 2]
-        y_coords = path[:, 1]
-        z_coords = path[:, 0]
+        x_coords = path[:, 0]  # X坐标
+        y_coords = path[:, 1]  # Y坐标
+        z_coords = path[:, 2]  # Z坐标
 
         # 绘制3D路径
         ax_3d.plot(x_coords, y_coords, z_coords,
@@ -548,15 +556,15 @@ def plot_3d_view(volume, paths):
                           color='cyan', s=100, marker='s', edgecolors='black',
                           label=f'End {i + 1}' if i == 0 else "")
 
-    # 设置坐标轴标签（注意：numpy坐标顺序是 (z, y, x)，但3D绘图通常用 (x, y, z)）
+    # 设置坐标轴标签（保持(x, y, z)顺序）
     ax_3d.set_xlabel('X (voxels)', fontsize=12)
     ax_3d.set_ylabel('Y (voxels)', fontsize=12)
     ax_3d.set_zlabel('Z (voxels)', fontsize=12)
 
     # 设置坐标范围
-    ax_3d.set_xlim([0, vol_shape[2]])
-    ax_3d.set_ylim([0, vol_shape[1]])
-    ax_3d.set_zlim([0, vol_shape[0]])
+    ax_3d.set_xlim([0, vol_shape[0]])  # X轴范围
+    ax_3d.set_ylim([0, vol_shape[1]])  # Y轴范围
+    ax_3d.set_zlim([0, vol_shape[2]])  # Z轴范围
 
     # 设置视角
     ax_3d.view_init(elev=20, azim=45)
@@ -566,9 +574,9 @@ def plot_3d_view(volume, paths):
     ax_3d.grid(True, alpha=0.3)
 
     # 添加坐标轴刻度
-    ax_3d.set_xticks(np.linspace(0, vol_shape[2], 5))
+    ax_3d.set_xticks(np.linspace(0, vol_shape[0], 5))
     ax_3d.set_yticks(np.linspace(0, vol_shape[1], 5))
-    ax_3d.set_zticks(np.linspace(0, vol_shape[0], 5))
+    ax_3d.set_zticks(np.linspace(0, vol_shape[2], 5))
 
     plt.tight_layout()
     plt.show()
