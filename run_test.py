@@ -32,4 +32,5 @@ curve_planar_reformat(
 
 extract_axial_slice(
         cpr_nifti_path="cpr_result_angle0.nii.gz",  # CPR重建结果
+        save_path="./cpr_result"
     )

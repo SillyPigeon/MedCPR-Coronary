@@ -8,11 +8,10 @@ from collections import defaultdict, deque
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import networkx as nx
-
 import nibabel as nib
 
 
-def extract_axial_slice(cpr_nifti_path, output_dir="."):
+def extract_axial_slice(cpr_nifti_path, save_path=None):
     """
     提取CPR图像中宽度方向中点的轴向切片
     保存宽度中点及前后相邻的三个切片为PNG图像
@@ -21,23 +20,22 @@ def extract_axial_slice(cpr_nifti_path, output_dir="."):
     -----------
     cpr_nifti_path : str
         CPR nifti图像路径
-    output_dir : str
-        输出PNG文件的目录路径，默认为当前目录
+    save_path : str or None
+        输出文件的基础路径，默认为None（使用输入文件名）
+        示例: "output/slices/cpr_result" 会生成:
+            "output/slices/cpr_result_depthXXX.png"
     """
     import os
 
-    # 检查并创建输出目录
-    os.makedirs(output_dir, exist_ok=True)
-
     # 1. 加载数据
     cpr_img = nib.load(cpr_nifti_path)
-    cpr_data = cpr_img.get_fdata()  # 形状: (depth, height, width)
+    cpr_data = cpr_img.get_fdata()  # 形状: (width, height, depth)
 
     # 2. 获取图像形状
     width, height, depth = cpr_data.shape
     print(f"CPR图像形状: width={width}, height={height}, depth={depth}")
 
-    # 3. 计算宽度方向的中点索引
+    # 3. 计算深度方向的中点索引
     center_depth_idx = depth // 2
 
     # 4. 确定三个切片的索引
@@ -50,20 +48,35 @@ def extract_axial_slice(cpr_nifti_path, output_dir="."):
             print(f"错误: 索引{idx}超出有效范围(0-{depth - 1})")
             return
 
-    # 5. 获取基础文件名（不含扩展名）
-    base_name = os.path.basename(cpr_nifti_path)
-    base_name = os.path.splitext(base_name)[0]
-    if base_name.endswith('.nii'):
-        base_name = base_name[:-4]
+    # 5. 确定输出文件的基础名称
+    if save_path is None:
+        # 使用输入文件名作为基础
+        base_name = os.path.basename(cpr_nifti_path)
+        base_name = os.path.splitext(base_name)[0]
+        if base_name.endswith('.nii'):
+            base_name = base_name[:-4]
+        base_path = base_name
+    else:
+        # 使用用户指定的路径
+        base_path = save_path
 
-    # 6. 保存三个切片为PNG
+    # 6. 提取目录路径并创建目录
+    output_dir = os.path.dirname(base_path)
+    if output_dir:  # 如果不是当前目录
+        os.makedirs(output_dir, exist_ok=True)
+
+    # 7. 获取纯文件名（不含目录）
+    file_basename = os.path.basename(base_path)
+
+    # 8. 保存三个切片为PNG
+    saved_files = []
     for idx in slice_indices:
         # 提取切片数据
         slice_data = cpr_data[:, :, idx]
 
         # 生成输出文件路径
-        output_filename = f"{base_name}_depth{idx:03d}.png"
-        output_path = os.path.join(output_dir, output_filename)
+        output_filename = f"{file_basename}_depth{idx:03d}.png"
+        output_path = os.path.join(output_dir, output_filename) if output_dir else output_filename
 
         # 创建并保存图像
         plt.figure(figsize=(8, 6))
@@ -72,11 +85,14 @@ def extract_axial_slice(cpr_nifti_path, output_dir="."):
         plt.savefig(output_path, dpi=150, bbox_inches='tight', pad_inches=0)
         plt.close()
 
+        saved_files.append(output_path)
         print(f"已保存切片 {idx} 到: {output_path}")
 
-    print(f"\n切片提取完成，共保存3个PNG文件到目录: {output_dir}")
+    print(f"\n切片提取完成，共保存3个PNG文件")
     print(f"切片索引: {slice_indices}")
-    print(f"切片形状: ({depth}, {height})")
+    print(f"切片形状: ({width}, {height})")
+
+    return saved_files
 
 def curve_planar_reformat(image_path, points_path, save_path, fov_mm=50, rotation_angle=0):
     """
