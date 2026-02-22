@@ -10,12 +10,12 @@ import shutil
 from sklearn.model_selection import train_test_split
 from pathlib import Path
 
-test_ratio = 0.6  # 测试集比例
+test_ratio = 0.1  # 测试集比例
 val_ratio = 0.1   # 验证集比例
-imgpath = r'E:\5-dataset\mask\images'  # 图片路径
-txtpath = r'E:\5-dataset\mask\labels'      # 标签路径
+imgpath = r'G:\Develop_Projs\labs_projs\plaque_proj\data\output-fov65-dpi-150'  # 图片路径
+txtpath = r'G:\Develop_Projs\labs_projs\plaque_proj\data\label-fov65-dpi-150-yolo-txt'      # 标签路径
 
-BASE_DIR = Path(r'E:\5-dataset\mask\dataset-mask')  # 输出目录
+BASE_DIR = Path(r'G:\Develop_Projs\labs_projs\plaque_proj\data\dataset-mask')  # 输出目录
 
 SUPPORTED_IMG_EXTS = ['.jpg', '.jpeg', '.png']
 
