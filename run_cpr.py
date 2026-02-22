@@ -224,14 +224,14 @@ def main():
     """主函数：配置参数并运行批量处理"""
 
     # 配置参数
-    CT_FOLDER = "./ct_data"  # CT原图文件夹路径
-    SEG_FOLDER = "./ct_label"  # 冠脉标签数据文件夹路径
+    CT_FOLDER = "\\\\10.193.3.26\huangzh_mnt\\nnunet\\nnUNet_raw\Dataset001_Mix_Coronary_Only\imagesTr"  # CT原
+    SEG_FOLDER = "\\\\10.193.3.26\huangzh_mnt\\nnunet\\nnUNet_raw\Dataset001_Mix_Coronary_Only\labelsTr"  # 冠脉
     OUTPUT_FOLDER = "./output"  # 输出文件夹路径
 
     # 处理参数
-    SKIP = 5  # 中心线下采样间隔
+    SKIP = 3  # 中心线下采样间隔
     MAX_BRANCHES = 3  # 提取三条中心线
-    FOV_MM = 90  # CPR视野大小
+    FOV_MM = 65  # CPR视野大小
     ROTATION_ANGLES = [0, 45, 90, 135]  # 四个旋转角度
 
     print("冠脉CT图像批量处理脚本")
